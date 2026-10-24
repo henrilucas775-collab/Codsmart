@@ -1,4 +1,5 @@
 import { seed } from '../data/seed';
+import { migrateExpenseRecords } from '../utils/migrations';
 
 export const money = (value) => `${new Intl.NumberFormat('fr-FR').format(value)} Ar`;
 
@@ -10,17 +11,15 @@ export class ExpenseRepository {
     this.key = key;
   }
 
+  // Une donnée illisible fait échouer le chargement (pas de repli sur le seed) :
+  // le store suspend alors la sauvegarde pour ne pas écraser l'existant.
   async load() {
     if (hasElectronBridge()) {
-      return await window.electronAPI.getExpenses();
+      return migrateExpenseRecords(await window.electronAPI.getExpenses());
     }
 
-    try {
-      const saved = this.storage?.getItem(this.key);
-      return saved ? JSON.parse(saved) : seed;
-    } catch {
-      return seed;
-    }
+    const saved = this.storage?.getItem(this.key);
+    return saved ? migrateExpenseRecords(JSON.parse(saved)) : seed;
   }
 
   async save(records) {
@@ -32,17 +31,9 @@ export class ExpenseRepository {
     this.storage?.setItem(this.key, JSON.stringify(records));
     return records;
   }
-
-  async update(records) {
-    return this.save(records);
-  }
 }
 
 export const expenseRepository = new ExpenseRepository();
-
-export const loadRecords = () => expenseRepository.load();
-
-export const saveRecords = (records) => expenseRepository.save(records);
 
 export const exportCsv = (rows, filename) => {
   const csvRows = [
@@ -55,7 +46,7 @@ export const exportCsv = (rows, filename) => {
     .join('\n');
 
   const link = document.createElement('a');
-  const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
 
   link.href = url;

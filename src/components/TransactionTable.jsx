@@ -2,6 +2,7 @@ import React from 'react';
 import { Eye, Pencil, Trash2 } from 'lucide-react';
 import { money } from '../services/expenseService';
 import Status from './Status';
+import { formatDate } from '../utils/date';
 
 export default function TransactionTable({ rows, onEdit, onDelete, compact, notify }) {
   return (
@@ -21,7 +22,7 @@ export default function TransactionTable({ rows, onEdit, onDelete, compact, noti
         <tbody>
           {rows.map((record) => (
             <tr key={record.id}>
-              <td className="date-cell">{record.date}</td>
+              <td className="date-cell">{formatDate(record.date)}</td>
               <td>
                 <div className="person-cell">
                   <span className="person-avatar">

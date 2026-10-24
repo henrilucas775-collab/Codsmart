@@ -9,6 +9,7 @@ import {
   MoreHorizontal,
   Package,
   Plus,
+  Printer,
   Search,
   Smartphone,
   Trophy,
@@ -16,14 +17,13 @@ import {
   Wallet
 } from 'lucide-react';
 import TransactionTable from './TransactionTable';
-import { CAISSE_PAGE, getCategorySnapshot, getGlobalSnapshot } from '../utils/finance';
+import { CAISSE_PAGE, getCategorySnapshot, getGlobalSnapshot, getMovementKind, isCounted } from '../utils/finance';
 
 export default function ModulePage({
   page,
   data,
   pageRecords = data,
   allRecords = [],
-  total,
   query,
   setQuery,
   filter,
@@ -49,7 +49,6 @@ export default function ModulePage({
       : getCategorySnapshot(pageRecords, page);
   const moduleTotal = categorySnapshot.balance;
   const pendingCount = data.filter((row) => ['En attente', 'À valider', 'En cours', 'En transit'].includes(row.status)).length;
-  const validatedCount = data.filter((row) => ['Validé', 'Livré'].includes(row.status)).length;
 
   const config = {
     Dépôt: {
@@ -149,6 +148,24 @@ export default function ModulePage({
     ['Opérations', String(data.length)],
     ['En attente', String(pendingCount)]
   ];
+  const operatorTotals = React.useMemo(() => {
+    const totals = { YAS: 0, ORANGE: 0 };
+    data.forEach((row) => {
+      const movementKind = getMovementKind(row);
+      if (movementKind === 'deposit' || movementKind === 'transfer' || !isCounted(row)) {
+        return;
+      }
+
+      const rawOperator = row.forfaitOperator || row.operator || row.type || '';
+      const operatorName = String(rawOperator).toUpperCase();
+      if (!operatorName.includes('YAS') && !operatorName.includes('ORANGE')) {
+        return;
+      }
+      const normalized = operatorName.includes('ORANGE') ? 'ORANGE' : 'YAS';
+      totals[normalized] += Number(row.amount) || 0;
+    });
+    return totals;
+  }, [data]);
 
   return (
     <>
@@ -225,10 +242,10 @@ export default function ModulePage({
         <div className="operator-strip">
           <span>Solde par opérateur</span>
           <b>
-            <i className="operator-dot yas" /> YAS <strong>485 000 Ar</strong>
+            <i className="operator-dot yas" /> YAS <strong>{money(operatorTotals.YAS)}</strong>
           </b>
           <b>
-            <i className="operator-dot orange-op" /> ORANGE <strong>360 000 Ar</strong>
+            <i className="operator-dot orange-op" /> ORANGE <strong>{money(operatorTotals.ORANGE)}</strong>
             <ChevronDown size={14} />
           </b>
         </div>
@@ -250,16 +267,14 @@ export default function ModulePage({
             <select className="filter-select" value={filter} onChange={(event) => setFilter(event.target.value)}>
               <option>Tous</option>
               <option>Actif</option>
-              <option>À vérifier</option>
               <option>Validé</option>
-              <option>En attente</option>
-              <option>En cours</option>
-              <option>À valider</option>
               <option>Livré</option>
-              <option>En transit</option>
             </select>
             <button className="outline-btn export-btn" onClick={onExport}>
               <Download size={15} /> Exporter
+            </button>
+            <button className="outline-btn" onClick={() => window.print()}>
+              <Printer size={15} /> Imprimer
             </button>
           </div>
         </div>

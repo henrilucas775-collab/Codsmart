@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { expenseRepository, exportCsv } from '../services/expenseService';
-import { initialBalance, seed } from '../data/seed';
-import { flattenRecords, getGlobalSnapshot, getMovementKind } from '../utils/finance';
+import { seed } from '../data/seed';
+import { flattenRecords, getGlobalSnapshot } from '../utils/finance';
 
 export function useExpenseStore() {
   const repository = useMemo(() => expenseRepository, []);
@@ -15,26 +15,7 @@ export function useExpenseStore() {
   const [toast, setToast] = useState('');
   const [filter, setFilter] = useState('Tous');
   const [isLoaded, setIsLoaded] = useState(false);
-
-  useEffect(() => {
-    let isMounted = true;
-
-    repository.load().then((loaded) => {
-      if (isMounted) {
-        setRecords(loaded || seed);
-        setIsLoaded(true);
-      }
-    });
-
-    return () => {
-      isMounted = false;
-    };
-  }, [repository]);
-
-  useEffect(() => {
-    if (!isLoaded) return;
-    repository.save(records);
-  }, [records, repository, isLoaded]);
+  const [loadError, setLoadError] = useState('');
 
   const notify = useCallback((message) => {
     setToast(message);
@@ -44,21 +25,44 @@ export function useExpenseStore() {
     notify.timer = setTimeout(() => setToast(''), 2600);
   }, []);
 
+  useEffect(() => {
+    let isMounted = true;
+
+    repository
+      .load()
+      .then((loaded) => {
+        if (isMounted) {
+          setRecords(loaded || seed);
+          setIsLoaded(true);
+        }
+      })
+      .catch(() => {
+        // isLoaded reste à false : aucune sauvegarde ne viendra écraser les données existantes.
+        if (isMounted) {
+          setLoadError(
+            'Les données des charges n’ont pas pu être lues. La sauvegarde automatique est suspendue pour ne pas écraser le fichier existant.'
+          );
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [repository]);
+
+  useEffect(() => {
+    if (!isLoaded) return;
+    repository.save(records).catch(() => notify('Échec de l’enregistrement des charges'));
+  }, [records, repository, isLoaded, notify]);
+
   const all = useMemo(() => flattenRecords(records), [records]);
   const globalSnapshot = useMemo(() => getGlobalSnapshot(all), [all]);
-  const chargeTotal = useMemo(
-    () =>
-      all
-        .filter((item) => getMovementKind(item) === 'charge')
-        .reduce((sum, item) => sum + (item.status === 'Rejeté' ? 0 : Number(item.amount || 0)), 0),
-    [all]
-  );
   const total = useMemo(
     () => globalSnapshot.balance,
     [globalSnapshot]
   );
 
-  const pageRecords = records[page] || [];
+  const pageRecords = useMemo(() => records[page] || [], [records, page]);
   const filtered = useMemo(
     () =>
       pageRecords.filter(
@@ -73,7 +77,8 @@ export function useExpenseStore() {
 
   const saveRecord = useCallback(
     (data) => {
-      const id = edit?.id || Date.now();
+      // Pas de `edit?.id || …` : l'id 0 (solde initial) est falsy et la modification serait perdue.
+      const id = edit ? edit.id : Date.now();
       setRecords((previous) => ({
         ...previous,
         [page]: edit
@@ -124,7 +129,7 @@ export function useExpenseStore() {
     edit,
     setEdit,
     toast,
-    setToast,
+    loadError,
     all,
     pageRecords,
     filtered,

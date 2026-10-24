@@ -9,6 +9,12 @@ export const ALLOCATION_PAGES = [
   'Autre'
 ];
 
+/** Une opération rejetée reste visible dans l'historique mais n'entre dans aucun solde. */
+export const isCounted = (record = {}) => record.status !== 'Rejeté';
+
+export const sumAmounts = (items = []) =>
+  items.reduce((sum, item) => (isCounted(item) ? sum + Number(item.amount || 0) : sum), 0);
+
 export function flattenRecords(records) {
   if (Array.isArray(records)) {
     return records;
@@ -83,8 +89,8 @@ export function getCategorySnapshot(records = [], page = null) {
 
   const charges = entries.filter((record) => getMovementKind(record) === 'charge');
 
-  const inflowsTotal = inflows.reduce((sum, item) => sum + Number(item.amount || 0), 0);
-  const chargesTotal = charges.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const inflowsTotal = sumAmounts(inflows);
+  const chargesTotal = sumAmounts(charges);
 
   return {
     page: effectivePage,
@@ -101,9 +107,9 @@ export function getGlobalSnapshot(records = []) {
   const transfers = items.filter((record) => getMovementKind(record) === 'transfer');
   const charges = items.filter((record) => getMovementKind(record) === 'charge');
 
-  const depositsTotal = deposits.reduce((sum, item) => sum + Number(item.amount || 0), 0);
-  const transfersTotal = transfers.reduce((sum, item) => sum + Number(item.amount || 0), 0);
-  const chargesTotal = charges.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const depositsTotal = sumAmounts(deposits);
+  const transfersTotal = sumAmounts(transfers);
+  const chargesTotal = sumAmounts(charges);
 
   return {
     deposits: depositsTotal,
@@ -136,17 +142,10 @@ export function getChargeSafetyCheck(records = [], page = null, amount = 0, excl
 
 export function getTransferSafetyCheck(records = [], amount = 0, excludedId = null) {
   const requested = Number(amount) || 0;
+  // En modification, exclure l'opération d'origine suffit à remettre son montant dans le disponible.
   const items = flattenRecords(records).filter((record) => record.id !== excludedId);
   const snapshot = getGlobalSnapshot(items);
-  let available = Math.max(0, snapshot.balance);
-
-  if (excludedId != null) {
-    const original = flattenRecords(records).find((record) => record.id === excludedId);
-    if (original && getMovementKind(original) === 'transfer') {
-      available += Number(original.amount || 0);
-    }
-  }
-
+  const available = Math.max(0, snapshot.balance);
   const isInsufficient = requested > 0 && requested > available;
 
   return {

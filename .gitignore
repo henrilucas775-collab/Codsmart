@@ -2,3 +2,7 @@ node_modules/
 dist/
 release/
 .DS_Store
+
+# Exports de paie / présence (données personnelles) : ne pas versionner
+/*.csv
+/*.xlsx

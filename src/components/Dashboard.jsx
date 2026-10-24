@@ -13,22 +13,20 @@ import {
 } from 'recharts';
 import {
     ArrowUpRight,
-    Bell,
     ChevronDown,
     CircleAlert,
     Ellipsis,
     Fuel,
     HandCoins,
-    MoreHorizontal,
-    Package,
     Plus,
     Smartphone,
-    Trophy,
     Wallet
 } from 'lucide-react';
-import { monthly } from '../data/seed';
 import { money } from '../services/expenseService';
-import { getGlobalSnapshot, getMovementKind } from '../utils/finance';
+import { getGlobalSnapshot, getMovementKind, isCounted, sumAmounts } from '../utils/finance';
+import { compareIsoDesc, formatMonthShort, lastMonthKeys, monthKey } from '../utils/date';
+
+const compactAmount = new Intl.NumberFormat('fr-FR', { notation: 'compact', maximumFractionDigits: 1 });
 import Stat from './Stat';
 import TransactionTable from './TransactionTable';
 
@@ -57,12 +55,10 @@ export default function Dashboard({ total, all, onNavigate, notify, onQuickDepos
 
     const globalSnapshot = getGlobalSnapshot(all);
 
-    const chargeTotal = all
-        .filter((item) => getMovementKind(item) === 'charge')
-        .reduce((sum, item) => sum + Number(item.amount || 0), 0);
+    const charges = all.filter((item) => getMovementKind(item) === 'charge' && isCounted(item));
+    const chargeTotal = sumAmounts(charges);
 
-    const categoryTotals = all.reduce((acc, item) => {
-        if (getMovementKind(item) !== 'charge') return acc;
+    const categoryTotals = charges.reduce((acc, item) => {
         const category = normalizeCategory(item);
         if (!category) return acc;
         acc[category] = (acc[category] || 0) + Number(item.amount || 0);
@@ -88,11 +84,22 @@ export default function Dashboard({ total, all, onNavigate, notify, onQuickDepos
         ['Opérations validées', `${validatedCount} dépôts ou livraisons validés`, 'green']
     ];
 
-    const chartScale = chargeTotal > 0 ? chargeTotal / 5_800_000 : 1;
-    const chartData = monthly.map((entry) => ({
-        ...entry,
-        v: Number((entry.v * chartScale).toFixed(1))
-    }));
+    const monthlyTotals = charges.reduce((acc, item) => {
+        const key = monthKey(item.date);
+        if (key) acc[key] = (acc[key] || 0) + Number(item.amount || 0);
+        return acc;
+    }, {});
+    const chartData = lastMonthKeys(12).map((key) => ({ m: formatMonthShort(key), v: monthlyTotals[key] || 0 }));
+    const chartTotal = chartData.reduce((sum, entry) => sum + entry.v, 0);
+    const currentMonthTotal = chartData[chartData.length - 1].v;
+    const previousMonthTotal = chartData[chartData.length - 2].v;
+    const monthTrend =
+        previousMonthTotal > 0 ? Math.round(((currentMonthTotal - previousMonthTotal) / previousMonthTotal) * 100) : null;
+
+    const recentRows = [...all].sort((a, b) => compareIsoDesc(a.date, b.date)).slice(0, 5);
+    const todayLabel = new Date()
+        .toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
+        .toUpperCase();
 
     const statCards = [
         { title: 'Solde caisse', value: money(total), change: 'En temps réel', up: true, icon: Wallet, color: 'indigo', sub: 'Dépôts caisse − répartitions' },
@@ -105,7 +112,7 @@ export default function Dashboard({ total, all, onNavigate, notify, onQuickDepos
     <>
       <div className="welcome-row">
         <div>
-          <div className="eyebrow">LUNDI 12 OCTOBRE 2026</div>
+          <div className="eyebrow">{todayLabel}</div>
           <h1>
             Bonjour, Administrateur <span className="wave">✦</span>
           </h1>
@@ -152,7 +159,13 @@ export default function Dashboard({ total, all, onNavigate, notify, onQuickDepos
               <i className="legend-dot indigo-dot" /> Charges totales
             </span>
             <strong>
-              {money(total)} <em>+{Math.max(1, Math.round((chartData[chartData.length - 1]?.v || 0) / Math.max(1, chartData[0]?.v || 1) * 100))}%</em>
+              {money(chartTotal)}{' '}
+              {monthTrend !== null && (
+                <em title="Mois en cours par rapport au mois précédent">
+                  {monthTrend > 0 ? '+' : ''}
+                  {monthTrend}%
+                </em>
+              )}
             </strong>
           </div>
           <div className="area-wrap">
@@ -166,8 +179,8 @@ export default function Dashboard({ total, all, onNavigate, notify, onQuickDepos
                 </defs>
                 <CartesianGrid stroke="#edf0f5" vertical={false} />
                 <XAxis dataKey="m" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#99a1b1' }} />
-                <YAxis tickFormatter={(value) => `${value}M`} axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#99a1b1' }} />
-                <Tooltip formatter={(value) => [`${value} M Ar`, 'Charges']} contentStyle={{ border: '1px solid #edf0f5', borderRadius: 10, fontSize: 12 }} />
+                <YAxis tickFormatter={(value) => compactAmount.format(value)} axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#99a1b1' }} />
+                <Tooltip formatter={(value) => [money(value), 'Charges']} contentStyle={{ border: '1px solid #edf0f5', borderRadius: 10, fontSize: 12 }} />
                 <Area type="monotone" dataKey="v" stroke="#5969e7" strokeWidth={2.5} fill="url(#fill)" />
               </AreaChart>
             </ResponsiveContainer>
@@ -196,8 +209,8 @@ export default function Dashboard({ total, all, onNavigate, notify, onQuickDepos
               </PieChart>
             </ResponsiveContainer>
             <div className="donut-center">
-              <b>{money(total)}</b>
-              <span>Ariary</span>
+              <b>{money(chargeTotal)}</b>
+              <span>Total charges</span>
             </div>
           </div>
           <div className="category-legend">
@@ -223,7 +236,7 @@ export default function Dashboard({ total, all, onNavigate, notify, onQuickDepos
               Voir tout <ArrowUpRight size={15} />
             </button>
           </div>
-          <TransactionTable rows={all.slice(0, 5)} compact />
+          <TransactionTable rows={recentRows} compact />
         </div>
 
         <div className="panel alerts-panel">

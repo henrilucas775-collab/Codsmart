@@ -2,41 +2,43 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { app } = require('electron');
 
-function getStorageFile() {
-  return path.join(app.getPath('userData'), 'gestion-charges-data.json');
-}
+const EXPENSES_FILE = 'gestion-charges-data.json';
+const PAYROLL_FILE = 'gestion-paie-data.json';
 
-function readData() {
-  const file = getStorageFile();
+const dataPath = (name) => path.join(app.getPath('userData'), name);
 
+function readJson(name) {
+  const file = dataPath(name);
   if (!fs.existsSync(file)) {
-    fs.writeFileSync(file, '{}', 'utf8');
+    return {};
+  }
+
+  const raw = fs.readFileSync(file, 'utf8');
+  if (!raw.trim()) {
     return {};
   }
 
   try {
-    const raw = fs.readFileSync(file, 'utf8');
-    return raw ? JSON.parse(raw) : {};
-  } catch {
-    return {};
+    return JSON.parse(raw);
+  } catch (error) {
+    // Fichier illisible : on en garde une copie et on remonte l'erreur pour que l'interface
+    // suspende la sauvegarde automatique au lieu d'écraser les données.
+    fs.copyFileSync(file, `${file}.corrupt-${Date.now()}`);
+    throw error;
   }
 }
 
-function writeData(records) {
-  const file = getStorageFile();
-  fs.writeFileSync(file, JSON.stringify(records || {}, null, 2), 'utf8');
-  return records;
-}
-
-function getExpenses() {
-  return readData();
-}
-
-function saveExpenses(records) {
-  return writeData(records);
+function writeJson(name, data) {
+  const file = dataPath(name);
+  const tmp = `${file}.tmp`;
+  // Écriture dans un fichier temporaire puis renommage : une coupure ne laisse jamais un fichier tronqué.
+  fs.writeFileSync(tmp, JSON.stringify(data || {}, null, 2), 'utf8');
+  fs.renameSync(tmp, file);
 }
 
 module.exports = {
-  getExpenses,
-  saveExpenses
+  getExpenses: () => readJson(EXPENSES_FILE),
+  saveExpenses: (records) => writeJson(EXPENSES_FILE, records),
+  getPayroll: () => readJson(PAYROLL_FILE),
+  savePayroll: (data) => writeJson(PAYROLL_FILE, data)
 };

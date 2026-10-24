@@ -1,6 +1,17 @@
 import React, { useState } from 'react';
 import { Check, X } from 'lucide-react';
+import { buildDepositFormState, getDepositFormConfig } from '../data/depositForms';
+import DepositFormFields from './DepositFormFields';
+import ReceiptField from './ReceiptField';
 import { ALLOCATION_PAGES, CAISSE_PAGE, flattenRecords, getChargeSafetyCheck, getTransferSafetyCheck } from '../utils/finance';
+import { getFloatNumberForOperator } from '../utils/payroll';
+import { todayIso, toIsoDate } from '../utils/date';
+
+// Pages dont les charges portent le reçu du paiement (importé ou scanné)
+const RECEIPT_PAGES = ['Forfait', 'Carburant', 'Frais d’expédition', 'Bonus', 'Autre'];
+// Pages où le type de bénéficiaire n'est pas saisi : il vient de la fonction de l'employé choisi
+const PAGES_WITHOUT_BENEFICIARY_TYPE = ['Forfait', 'Carburant', 'Bonus', 'Autre'];
+const PAGES_WITHOUT_FLOAT_NUMBER = ['Carburant', 'Bonus', 'Autre'];
 
 export default function RecordModal({ page, initial, preset, beneficiaries = [], onClose, onSave, records = {} }) {
   const isEditing = Boolean(initial);
@@ -14,6 +25,14 @@ export default function RecordModal({ page, initial, preset, beneficiaries = [],
     activeInitial?.recordKind === 'deposit' ||
     activeInitial?.name === 'Solde initial';
   const isDeposit = isCaisseDeposit || isAllocation;
+  const allocationPage = isAllocation ? activeInitial?.page || page : page;
+  const depositFormConfig = isDeposit
+    ? getDepositFormConfig({
+        page: isAllocation ? allocationPage : page,
+        isCaisseDeposit,
+        isAllocation
+      })
+    : null;
   const isBeneficiary = page === 'Bénéficiaires' || activeInitial?.type === 'Bénéficiaire';
   const beneficiaryTypes = ['Commercial', 'Livreur', 'Responsable stock', 'Responsable admin'];
   const defaultBeneficiaryType = activeInitial?.beneficiaryType || activeInitial?.role || beneficiaryTypes[0];
@@ -24,29 +43,53 @@ export default function RecordModal({ page, initial, preset, beneficiaries = [],
     page === 'Frais d’expédition' ||
     activeInitial?.page === 'Frais d’expédition' ||
     activeInitial?.type === 'Frais d’expédition';
-  /** Formulaire colis / ticket : uniquement pour une charge expédition, pas pour répartition ni caisse. */
   const isShippingCharge = isShippingPage && !isDeposit && !isBeneficiary;
+
+  const depositDefaults = depositFormConfig ? buildDepositFormState(activeInitial, depositFormConfig) : {};
+
+  // Bénéficiaire présélectionné : ses informations s'appliquent dès l'ouverture, comme lors d'un choix dans la liste
+  const defaultBeneficiary =
+    !isDeposit && !isBeneficiary
+      ? beneficiaries.find((person) => person.name === (activeInitial?.name || defaultName))
+      : undefined;
+  // Forfait : le numéro float suit dès l'ouverture l'opérateur sélectionné par défaut
+  const defaultOperator = activeInitial?.forfaitOperator || activeInitial?.operator || 'YAS';
+  const defaultFloatNumber =
+    page === 'Forfait' && defaultBeneficiary ? getFloatNumberForOperator(defaultBeneficiary, defaultOperator) : '';
+  const hasReceiptField = RECEIPT_PAGES.includes(page) && !isDeposit && !isBeneficiary;
+  const showBeneficiaryType = isBeneficiary || !PAGES_WITHOUT_BENEFICIARY_TYPE.includes(page);
+  const showFloatNumber = !PAGES_WITHOUT_FLOAT_NUMBER.includes(page);
 
   const [form, setForm] = useState({
     name: activeInitial?.name || activeInitial?.senderName || (isDeposit ? 'Caisse / dépôt journalier' : isBeneficiary ? 'Nom du bénéficiaire' : defaultName),
     type: activeInitial?.type || (isDeposit ? 'Dépôt' : isBeneficiary ? 'Bénéficiaire' : page),
     description: activeInitial?.description || '',
-    numero: activeInitial?.numero || '',
+    numero: activeInitial?.numero || defaultFloatNumber,
     telephone: activeInitial?.telephone || '',
     amount: activeInitial?.amount || '',
-    date: activeInitial?.date || new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' }),
+    date: toIsoDate(activeInitial?.date) || todayIso(),
     status: activeInitial?.status || (isBeneficiary ? 'Actif' : 'Validé'),
-    beneficiaryType: activeInitial?.beneficiaryType || activeInitial?.role || defaultBeneficiaryType,
+    beneficiaryType:
+      activeInitial?.beneficiaryType || activeInitial?.role || defaultBeneficiary?.beneficiaryType || defaultBeneficiaryType,
     movementType: initialMovementType,
+    forfaitOperator: defaultOperator,
+    floatNumber: activeInitial?.floatNumber || defaultFloatNumber,
+    floatNumberYas: activeInitial?.floatNumberYas || activeInitial?.floatNumber?.YAS || '',
+    floatNumberOrange: activeInitial?.floatNumberOrange || activeInitial?.floatNumber?.ORANGE || '',
     departureLocation: activeInitial?.departureLocation || '',
     arrivalLocation: activeInitial?.arrivalLocation || '',
     ticketReference: activeInitial?.ticketReference || '',
+    receipt: activeInitial?.receipt || null,
     senderName: activeInitial?.senderName || activeInitial?.name || '',
-    recipientName: activeInitial?.recipientName || ''
+    recipientName: activeInitial?.recipientName || '',
+    ...depositDefaults
   });
   const [formError, setFormError] = useState('');
 
-  const showAmountInput = !isBeneficiary && (isDeposit || form.movementType === 'Charge' || form.movementType === 'Dépôt' || page === 'Dépôt' || activeInitial?.recordKind === 'transfer' || activeInitial?.recordKind === 'deposit');
+  const showAmountInput =
+    !depositFormConfig &&
+    !isBeneficiary &&
+    (isDeposit || form.movementType === 'Charge' || form.movementType === 'Dépôt' || page === 'Dépôt' || activeInitial?.recordKind === 'transfer' || activeInitial?.recordKind === 'deposit');
 
   const change = (event) => {
     setForm((previous) => ({
@@ -56,17 +99,46 @@ export default function RecordModal({ page, initial, preset, beneficiaries = [],
     setFormError('');
   };
 
+  const getSelectedBeneficiary = () => {
+    if (!beneficiaries || beneficiaries.length === 0) return null;
+    return beneficiaries.find((person) => person.name === form.name) || null;
+  };
+
+  const resolveFloatNumber = (operator = form.forfaitOperator || 'YAS') => {
+    const selected = getSelectedBeneficiary();
+    const selectedFloat = selected ? getFloatNumberForOperator(selected, operator) : '';
+    const formFloat = operator === 'ORANGE'
+      ? (form.floatNumberOrange || form.floatNumber || '')
+      : (form.floatNumberYas || form.floatNumber || '');
+
+    return selectedFloat || formFloat || '';
+  };
+
+  const modalTitle = depositFormConfig
+    ? isEditing
+      ? `Modifier · ${depositFormConfig.title}`
+      : depositFormConfig.title
+    : isEditing
+      ? 'Modifier l’opération'
+      : `Ajouter · ${page}`;
+
   return (
-    <div className="modal-backdrop" onMouseDown={(event) => {
-      if (event.target === event.currentTarget) onClose();
-    }}>
+    <div
+      className="modal-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
       <div className="modal">
         <div className="modal-head">
           <div>
-            <span className="eyebrow">{isEditing ? 'MODIFICATION' : 'NOUVELLE OPÉRATION'}</span>
-            <h2>{isEditing ? 'Modifier l’opération' : `Ajouter · ${page}`}</h2>
+            <span className="eyebrow">
+              {depositFormConfig?.eyebrow || (isEditing ? 'MODIFICATION' : 'NOUVELLE OPÉRATION')}
+            </span>
+            <h2>{modalTitle}</h2>
+            {depositFormConfig?.hint && <p className="modal-hint">{depositFormConfig.hint}</p>}
           </div>
-          <button className="icon-button" onClick={onClose}>
+          <button type="button" className="icon-button" onClick={onClose}>
             <X size={19} />
           </button>
         </div>
@@ -103,20 +175,45 @@ export default function RecordModal({ page, initial, preset, beneficiaries = [],
 
             setFormError('');
 
-            const senderName = isShippingCharge ? (form.senderName || form.name || 'Expéditeur') : form.name;
+            const senderName = isShippingCharge ? form.senderName || form.name || 'Expéditeur' : form.name;
+            const forfaitOperator = page === 'Forfait' ? (form.forfaitOperator || form.operator || 'YAS') : undefined;
+            const selectedBeneficiary = getSelectedBeneficiary();
+            const resolvedFloatNumber = page === 'Forfait' ? resolveFloatNumber(forfaitOperator) : '';
             const contactLine = [form.numero?.trim() && `N° ${form.numero.trim()}`, form.telephone?.trim() && `Tél. ${form.telephone.trim()}`]
               .filter(Boolean)
               .join(' • ');
-            const description = isShippingCharge
-              ? `Départ: ${form.departureLocation || '-'} • Arrivée: ${form.arrivalLocation || '-'} • Destinataire: ${form.recipientName || '-'} • Ticket: ${form.ticketReference || '-'}`
-              : contactLine || form.description || (isTransferOperation ? activeInitial?.description : '') || (isCaisseDepositOperation ? 'Versement de caisse' : '');
+
+            let description = isShippingCharge
+              ? [
+                  `Départ: ${form.departureLocation || '-'}`,
+                  `Arrivée: ${form.arrivalLocation || '-'}`,
+                  `Destinataire: ${form.recipientName || '-'}`,
+                  form.ticketReference && `Ticket: ${form.ticketReference}`
+                ]
+                  .filter(Boolean)
+                  .join(' • ')
+              : contactLine || form.description || '';
+
+            let depositExtras = {};
+            if (depositFormConfig && (isTransferOperation || isCaisseDepositOperation)) {
+              description = depositFormConfig.buildDescription(form);
+              depositExtras = depositFormConfig.extraFields(form);
+            }
 
             onSave({
               ...form,
+              ...depositExtras,
               name: senderName,
-              type: isMemberCreation ? 'Bénéficiaire' : isTransferOperation ? 'Répartition' : isBeneficiary ? 'Bénéficiaire' : isCaisseDepositOperation ? 'Dépôt' : page,
+              type: page === 'Forfait' && forfaitOperator
+                ? `${forfaitOperator} · Crédit mobile`
+                : isMemberCreation ? 'Bénéficiaire' : isTransferOperation ? 'Répartition' : isBeneficiary ? 'Bénéficiaire' : isCaisseDepositOperation ? 'Dépôt' : page,
               description: isMemberCreation ? 'Ajout d’un membre' : description,
-              numero: form.numero?.trim() || '',
+              numero:
+                page === 'Forfait'
+                  ? resolvedFloatNumber || form.numero?.trim() || ''
+                  : showFloatNumber
+                    ? form.numero?.trim() || ''
+                    : '',
               telephone: form.telephone?.trim() || '',
               recordKind: isMemberCreation ? 'beneficiary' : isTransferOperation ? 'transfer' : isCaisseDepositOperation ? 'deposit' : 'charge',
               amount: isMemberCreation ? 0 : isBeneficiary ? 0 : Number(form.amount) || 0,
@@ -125,9 +222,19 @@ export default function RecordModal({ page, initial, preset, beneficiaries = [],
               departureLocation: isShippingCharge ? form.departureLocation : undefined,
               arrivalLocation: isShippingCharge ? form.arrivalLocation : undefined,
               ticketReference: isShippingCharge ? form.ticketReference : undefined,
+              receipt: hasReceiptField ? form.receipt : undefined,
               user: 'Administrateur',
               beneficiaryType: form.beneficiaryType,
-              role: form.beneficiaryType
+              role: form.beneficiaryType,
+              forfaitOperator,
+              operator: forfaitOperator,
+              floatNumber: resolvedFloatNumber || form.floatNumber || '',
+              floatNumberYas: selectedBeneficiary?.floatNumberYas || form.floatNumberYas || '',
+              floatNumberOrange: selectedBeneficiary?.floatNumberOrange || form.floatNumberOrange || '',
+              floatNumberByOperator: {
+                YAS: selectedBeneficiary?.floatNumberYas || form.floatNumberYas || '',
+                ORANGE: selectedBeneficiary?.floatNumberOrange || form.floatNumberOrange || ''
+              }
             });
           }}
         >
@@ -143,40 +250,49 @@ export default function RecordModal({ page, initial, preset, beneficiaries = [],
                   <input name="arrivalLocation" value={form.arrivalLocation} onChange={change} placeholder="Ex. Toamasina" required />
                 </label>
               </div>
-
               <div className="form-row">
-                <label>
-                  ID référence du ticket
-                  <input name="ticketReference" value={form.ticketReference} onChange={change} placeholder="Ex. EXP-2418" required />
-                </label>
                 <label>
                   Nom d’expéditeur
                   <input name="senderName" value={form.senderName} onChange={change} placeholder="Ex. Agence Fianarantsoa" required />
                 </label>
-              </div>
-
-              <div className="form-row">
                 <label>
                   Nom du destinataire
                   <input name="recipientName" value={form.recipientName || ''} onChange={change} placeholder="Ex. Client ou agence destinataire" required />
                 </label>
+              </div>
+              <div className="form-row">
                 <label>
                   Montant du frais
                   <input type="number" min="0" name="amount" value={form.amount} onChange={change} placeholder="0" required />
                 </label>
               </div>
             </>
+          ) : depositFormConfig ? (
+            <DepositFormFields config={depositFormConfig} form={form} change={change} />
           ) : !isDeposit && !isBeneficiary && beneficiaries.length > 0 ? (
             <label>
               Bénéficiaire
-              <select name="name" value={form.name} onChange={(event) => {
-                const selected = beneficiaries.find((person) => person.name === event.target.value);
-                setForm((previous) => ({
-                  ...previous,
-                  name: event.target.value,
-                  beneficiaryType: selected?.beneficiaryType || selected?.role || previous.beneficiaryType
-                }));
-              }}>
+              <select
+                name="name"
+                value={form.name}
+                onChange={(event) => {
+                  const selected = beneficiaries.find((person) => person.name === event.target.value) || null;
+                  const nextOperator = form.forfaitOperator || 'YAS';
+                  const nextFloat = selected ? getFloatNumberForOperator(selected, nextOperator) : '';
+
+                  setForm((previous) => ({
+                    ...previous,
+                    name: event.target.value,
+                    beneficiaryType: selected?.beneficiaryType || selected?.role || selected?.function || previous.beneficiaryType,
+                    telephone: selected?.telephone || previous.telephone || '',
+                    status: selected?.status || previous.status || 'Actif',
+                    floatNumberYas: selected?.floatNumberYas || selected?.floatNumber?.YAS || '',
+                    floatNumberOrange: selected?.floatNumberOrange || selected?.floatNumber?.ORANGE || '',
+                    floatNumber: nextFloat || previous.floatNumber || '',
+                    numero: nextFloat || previous.numero || ''
+                  }));
+                }}
+              >
                 {beneficiaries.map((person) => (
                   <option key={person.id || person.name} value={person.name}>
                     {person.name} · {person.beneficiaryType || person.role || 'Bénéficiaire'}
@@ -186,70 +302,92 @@ export default function RecordModal({ page, initial, preset, beneficiaries = [],
             </label>
           ) : (
             <label>
-              {isDeposit ? 'Source du dépôt' : 'Nom du bénéficiaire'}
-              <input name="name" value={form.name} onChange={change} placeholder={isDeposit ? 'Ex. Caisse centrale / dépôt journalier' : 'Ex. Rakoto Jean'} required />
+              Nom du bénéficiaire
+              <input name="name" value={form.name} onChange={change} placeholder="Ex. Rakoto Jean" required />
             </label>
           )}
 
-          {!isShippingCharge && (
+          {!isShippingCharge && !depositFormConfig && (
             <div className="form-row">
+              {page === 'Forfait' && (
+                <label>
+                  Opérateur
+                  <select
+                    name="forfaitOperator"
+                    value={form.forfaitOperator}
+                    onChange={(event) => {
+                      const nextOperator = event.target.value;
+                      const nextFloat = resolveFloatNumber(nextOperator);
+                      setForm((previous) => ({
+                        ...previous,
+                        forfaitOperator: nextOperator,
+                        numero: nextFloat || previous.numero || '',
+                        floatNumber: nextFloat || previous.floatNumber || ''
+                      }));
+                    }}
+                  >
+                    <option value="YAS">YAS</option>
+                    <option value="ORANGE">Orange</option>
+                  </select>
+                </label>
+              )}
               <label>
-                {isDeposit ? (isAllocation ? 'Type de répartition' : 'Type de mouvement') : 'Catégorie / type'}
-                <input name="type" value={form.type} onChange={change} placeholder={isDeposit ? 'Dépôt' : isBeneficiary ? 'Bénéficiaire' : page} readOnly={isDeposit || isBeneficiary} />
+                Catégorie / type
+                <input name="type" value={form.type} onChange={change} placeholder={isBeneficiary ? 'Bénéficiaire' : page} readOnly={isBeneficiary} />
               </label>
-              {!isBeneficiary && !isDeposit && (
+              {!isBeneficiary && (
                 <label>
                   Type de mouvement
                   <input name="movementType" value="Charge" readOnly />
                 </label>
               )}
-              {!isBeneficiary && !isDeposit && (
+              {showBeneficiaryType && (
                 <label>
                   Type de bénéficiaire
                   <select name="beneficiaryType" value={form.beneficiaryType} onChange={change}>
                     {beneficiaryTypes.map((type) => (
-                      <option key={type} value={type}>{type}</option>
+                      <option key={type} value={type}>
+                        {type}
+                      </option>
                     ))}
                   </select>
                 </label>
               )}
+            </div>
+          )}
+
+          {!isShippingCharge && !depositFormConfig && !isBeneficiary && (showAmountInput || showFloatNumber) && (
+            <div className="form-row">
               {showAmountInput && (
                 <label>
                   Montant (Ar)
                   <input type="number" min="0" name="amount" value={form.amount} onChange={change} placeholder="0" required />
                 </label>
               )}
+              {showFloatNumber && (
+                <label>
+                  Numéro float
+                  <input
+                    name="numero"
+                    value={form.numero}
+                    onChange={change}
+                    placeholder="Ex. 032 00 000 00"
+                    readOnly={page === 'Forfait' || form.beneficiaryType === 'Commercial' || form.beneficiaryType === 'Responsable stock'}
+                  />
+                </label>
+              )}
             </div>
           )}
 
-          {isBeneficiary && (
-            <div className="form-row">
-              <label>
-                Type de bénéficiaire
-                <select name="beneficiaryType" value={form.beneficiaryType} onChange={change}>
-                  {beneficiaryTypes.map((type) => (
-                    <option key={type} value={type}>{type}</option>
-                  ))}
-                </select>
-              </label>
-            </div>
-          )}
-
-          {!isShippingCharge && (
-            <div className="form-row">
-              <label>
-                Numéro
-                <input name="numero" value={form.numero} onChange={change} placeholder="Ex. REF-2026-014" />
-              </label>
-              <label>
-                Tél.
-                <input name="telephone" value={form.telephone} onChange={change} placeholder="Ex. 034 12 345 67" inputMode="tel" />
-              </label>
-            </div>
+          {hasReceiptField && (
+            <ReceiptField
+              receipt={form.receipt}
+              onReceiptChange={(receipt) => setForm((previous) => ({ ...previous, receipt }))}
+            />
           )}
 
           {formError && (
-            <div role="alert" style={{ marginTop: 10, padding: '10px 12px', borderRadius: 10, background: '#fff4ed', border: '1px solid #f3b482', color: '#9c4f16', fontWeight: 600, lineHeight: 1.5 }}>
+            <div className="form-error" role="alert">
               {formError}
             </div>
           )}
@@ -257,7 +395,7 @@ export default function RecordModal({ page, initial, preset, beneficiaries = [],
           <div className="form-row">
             <label>
               Date
-              <input name="date" value={form.date} onChange={change} />
+              <input type="date" name="date" value={form.date} onChange={change} required />
             </label>
             <label>
               Statut

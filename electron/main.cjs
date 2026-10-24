@@ -1,9 +1,15 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('node:path');
-const { getExpenses, saveExpenses } = require('./db.cjs');
+const { getExpenses, saveExpenses, getPayroll, savePayroll } = require('./db.cjs');
+const { importReceipt, scanReceipt, openReceipt } = require('./receipts.cjs');
 
 ipcMain.handle('expenses:get', () => getExpenses());
 ipcMain.handle('expenses:save', (_event, records) => saveExpenses(records));
+ipcMain.handle('payroll:get', () => getPayroll());
+ipcMain.handle('payroll:save', (_event, data) => savePayroll(data));
+ipcMain.handle('receipts:import', (event) => importReceipt(BrowserWindow.fromWebContents(event.sender)));
+ipcMain.handle('receipts:scan', () => scanReceipt());
+ipcMain.handle('receipts:open', (_event, file) => openReceipt(file));
 
 function createWindow() {
   const win = new BrowserWindow({

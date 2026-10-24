@@ -1,34 +1,74 @@
 import React from 'react';
 import { ChartNoAxesCombined, Download, FileSpreadsheet, Filter, Printer } from 'lucide-react';
-import { nav } from '../data/seed';
-import { money } from '../services/expenseService';
-import { getGlobalSnapshot, getMovementKind } from '../utils/finance';
+import { exportCsv, money } from '../services/expenseService';
+import { ALLOCATION_PAGES, CAISSE_PAGE, getGlobalSnapshot, getMovementKind, isCounted } from '../utils/finance';
+import { compareIsoDesc, formatDate, formatMonth, lastMonthKeys, monthKey } from '../utils/date';
 
-export default function Reports({ all, notify, onExport }) {
-  const globalSnapshot = getGlobalSnapshot(all);
+const ALL_PERIODS = 'all';
+const LAST_12_MONTHS = 'last12';
+const ALL_CATEGORIES = 'Toutes les catégories';
+const ALL_EMPLOYEES = 'Tous les employés';
+const CATEGORY_OPTIONS = [CAISSE_PAGE, ...ALLOCATION_PAGES];
+
+export default function Reports({ all, notify }) {
+  const [period, setPeriod] = React.useState(ALL_PERIODS);
+  const [category, setCategory] = React.useState(ALL_CATEGORIES);
+  const [employee, setEmployee] = React.useState(ALL_EMPLOYEES);
+
+  // Les options sont tirées des données plutôt que codées en dur.
+  const monthOptions = React.useMemo(
+    () => [...new Set(all.map((record) => monthKey(record.date)).filter(Boolean))].sort().reverse(),
+    [all]
+  );
+  const employeeOptions = React.useMemo(
+    () =>
+      [...new Set(all.filter((record) => getMovementKind(record) === 'charge').map((record) => record.name))]
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b, 'fr')),
+    [all]
+  );
+
+  const filteredRecords = React.useMemo(() => {
+    const recentMonths = new Set(lastMonthKeys(12));
+    return all.filter((record) => {
+      const matchesCategory =
+        category === ALL_CATEGORIES ||
+        record.page === category ||
+        record.type === category ||
+        (record.category && record.category === category);
+      const matchesEmployee = employee === ALL_EMPLOYEES || record.name === employee || record.senderName === employee;
+      const recordMonth = monthKey(record.date);
+      const matchesPeriod =
+        period === ALL_PERIODS || (period === LAST_12_MONTHS ? recentMonths.has(recordMonth) : recordMonth === period);
+
+      return matchesCategory && matchesEmployee && matchesPeriod;
+    });
+  }, [all, category, employee, period]);
+
+  const globalSnapshot = getGlobalSnapshot(filteredRecords);
   const totalDeposits = globalSnapshot.deposits;
   const totalAllocations = globalSnapshot.transfers;
   const balance = globalSnapshot.balance;
 
-  const charges = all.filter((record) => getMovementKind(record) === 'charge');
+  const charges = filteredRecords.filter((record) => getMovementKind(record) === 'charge' && isCounted(record));
   const chargeTotal = globalSnapshot.charges;
 
   const categorySummary = Object.entries(
     charges.reduce((acc, record) => {
-      const key = record.type || 'Autre';
+      const key = record.page || record.type || 'Autre';
       acc[key] = (acc[key] || 0) + Number(record.amount || 0);
       return acc;
     }, {})
   )
-    .map(([category, amount]) => ({
-      category,
+    .map(([categoryName, amount]) => ({
+      category: categoryName,
       amount,
       share: chargeTotal > 0 ? Math.round((amount / chargeTotal) * 100) : 0
     }))
     .sort((a, b) => b.amount - a.amount);
 
-  const movements = [...all]
-    .sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0))
+  const movements = [...filteredRecords]
+    .sort((a, b) => compareIsoDesc(a.date, b.date))
     .map((record) => ({
       ...record,
       direction:
@@ -38,6 +78,12 @@ export default function Reports({ all, notify, onExport }) {
             ? 'transfer'
             : 'charge'
     }));
+
+  const exportReport = () => {
+    const suffix = period === ALL_PERIODS ? 'complet' : period === LAST_12_MONTHS ? '12-derniers-mois' : period;
+    exportCsv(movements, `rapport-${suffix}.csv`);
+    notify('Export CSV téléchargé');
+  };
 
   return (
     <>
@@ -52,7 +98,7 @@ export default function Reports({ all, notify, onExport }) {
           </h1>
           <p>Explorez et exportez les données de dépenses de votre entreprise.</p>
         </div>
-        <button className="primary-btn" onClick={onExport}>
+        <button className="primary-btn" onClick={exportReport}>
           <Download size={16} />
           Exporter le rapport
         </button>
@@ -65,33 +111,34 @@ export default function Reports({ all, notify, onExport }) {
         </div>
         <label>
           Période
-          <select>
-            <option>Octobre 2026</option>
-            <option>Septembre 2026</option>
-            <option>12 derniers mois</option>
+          <select value={period} onChange={(event) => setPeriod(event.target.value)}>
+            <option value={ALL_PERIODS}>Toutes les périodes</option>
+            <option value={LAST_12_MONTHS}>12 derniers mois</option>
+            {monthOptions.map((key) => (
+              <option key={key} value={key}>
+                {formatMonth(key)}
+              </option>
+            ))}
           </select>
         </label>
         <label>
           Catégorie
-          <select>
-            <option>Toutes les catégories</option>
-            {nav.slice(1, 8).map(([label]) => (
+          <select value={category} onChange={(event) => setCategory(event.target.value)}>
+            <option>{ALL_CATEGORIES}</option>
+            {CATEGORY_OPTIONS.map((label) => (
               <option key={label}>{label}</option>
             ))}
           </select>
         </label>
         <label>
           Employé
-          <select>
-            <option>Tous les employés</option>
-            <option>Rakoto Jean</option>
-            <option>Toto Kevin</option>
-            <option>Randria Marie</option>
+          <select value={employee} onChange={(event) => setEmployee(event.target.value)}>
+            <option>{ALL_EMPLOYEES}</option>
+            {employeeOptions.map((name) => (
+              <option key={name}>{name}</option>
+            ))}
           </select>
         </label>
-        <button className="outline-btn" onClick={() => notify('Filtres appliqués')}>
-          Appliquer
-        </button>
       </div>
 
       <div className="module-stats">
@@ -144,7 +191,9 @@ export default function Reports({ all, notify, onExport }) {
                 }}
               />
               {item.category}
-              <b>{money(item.amount)} · {item.share}%</b>
+              <b>
+                {money(item.amount)} · {item.share}%
+              </b>
             </div>
           ))}
         </div>
@@ -157,7 +206,7 @@ export default function Reports({ all, notify, onExport }) {
             <p>Dépôts et charges classés par date</p>
           </div>
           <div className="table-tools">
-            <button className="outline-btn" onClick={onExport}>
+            <button className="outline-btn" onClick={exportReport}>
               <FileSpreadsheet size={15} /> Excel / CSV
             </button>
             <button className="outline-btn" onClick={() => window.print()}>
@@ -193,19 +242,26 @@ export default function Reports({ all, notify, onExport }) {
                   justifyContent: 'space-between',
                   alignItems: 'center',
                   padding: '12px 14px',
-                  border: '1px solid #edf0f5',
-                  borderRadius: '12px',
-                  background: record.direction === 'deposit' ? '#ecfdf5' : '#f8fafc'
+                  border: '1px solid var(--color-border)',
+                  borderRadius: 'var(--radius-lg)',
+                  background:
+                    record.direction === 'deposit' ? 'var(--color-success-soft)' : 'var(--color-surface-muted)'
                 }}
               >
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                   <strong>{title}</strong>
-                  <span style={{ fontSize: '12px', color: '#6b7280' }}>{record.date} · {record.type}</span>
-                  <span style={{ fontSize: '12px', color: '#475569' }}>{record.description || (isBeneficiaryEntry ? 'Nouveau membre ajouté à la liste' : '—')}</span>
+                  <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--color-text-muted)' }}>
+                    {formatDate(record.date)} · {record.type}
+                  </span>
+                  <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--color-text-secondary)' }}>
+                    {record.description || (isBeneficiaryEntry ? 'Nouveau membre ajouté à la liste' : '—')}
+                  </span>
                 </div>
                 <div style={{ textAlign: 'right', display: 'flex', flexDirection: 'column', gap: '4px' }}>
                   <b style={{ color: amountColor }}>{amountText}</b>
-                  <span style={{ fontSize: '12px', color: '#6b7280' }}>{isBeneficiaryEntry ? 'Membre ajouté' : record.status}</span>
+                  <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--color-text-muted)' }}>
+                    {isBeneficiaryEntry ? 'Membre ajouté' : record.status}
+                  </span>
                 </div>
               </div>
             );
